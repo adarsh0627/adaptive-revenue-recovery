@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Python cache
+.pytest_cache/
+
+# Local runtime data
+data/live_recovery_attempts.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+# Local datasets and runtime state
+data/*.csv
+data/*.json
