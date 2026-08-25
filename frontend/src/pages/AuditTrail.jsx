@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  Activity,
   AlertCircle,
   CheckCircle2,
   ChevronDown,
@@ -15,7 +16,6 @@ import {
 } from "lucide-react";
 
 const API_BASE = "http://127.0.0.1:8001";
-
 const PAGE_SIZE = 25;
 
 const statusStyles = {
@@ -26,6 +26,12 @@ const statusStyles = {
   Pending: "bg-[#fff7e8] text-[#d97706]",
   Blocked: "bg-[#fff0f0] text-[#dc2626]",
 };
+
+const RANGE_OPTIONS = [
+  { label: "Last 7 days", value: "7" },
+  { label: "Last 30 days", value: "30" },
+  { label: "All time", value: "all" },
+];
 
 function AuditTrail() {
   const [events, setEvents] = useState([]);
@@ -47,6 +53,7 @@ function AuditTrail() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [range, setRange] = useState("30");
 
   const [page, setPage] = useState(1);
 
@@ -71,24 +78,17 @@ function AuditTrail() {
           params.set("page", String(page));
           params.set("page_size", String(PAGE_SIZE));
 
-          // Backend expects "all" when no category is selected.
           params.set(
             "category",
-            categoryFilter === "All"
-              ? "all"
-              : categoryFilter
+            categoryFilter === "All" ? "all" : categoryFilter
           );
 
-          // Backend expects "all" when no status is selected.
           params.set(
             "status",
-            statusFilter === "All"
-              ? "all"
-              : statusFilter
+            statusFilter === "All" ? "all" : statusFilter
           );
 
-          // Current dashboard range.
-          params.set("range", "30");
+          params.set("range", range);
 
           if (search.trim()) {
             params.set("search", search.trim());
@@ -111,43 +111,22 @@ function AuditTrail() {
           }
 
           setEvents(
-            Array.isArray(data.events)
-              ? data.events
-              : []
+            Array.isArray(data.events) ? data.events : []
           );
 
           setSummary({
-            total: Number(
-              data.summary?.total ?? 0
-            ),
-
-            guardrails: Number(
-              data.summary?.guardrails ?? 0
-            ),
-
-            webhooks: Number(
-              data.summary?.webhooks ?? 0
-            ),
-
-            blocked: Number(
-              data.summary?.blocked ?? 0
-            ),
+            total: Number(data.summary?.total ?? 0),
+            guardrails: Number(data.summary?.guardrails ?? 0),
+            webhooks: Number(data.summary?.webhooks ?? 0),
+            blocked: Number(data.summary?.blocked ?? 0),
           });
 
           setPagination({
-            page: Number(
-              data.pagination?.page ?? page
-            ),
-
+            page: Number(data.pagination?.page ?? page),
             page_size: Number(
-              data.pagination?.page_size ??
-                PAGE_SIZE
+              data.pagination?.page_size ?? PAGE_SIZE
             ),
-
-            total: Number(
-              data.pagination?.total ?? 0
-            ),
-
+            total: Number(data.pagination?.total ?? 0),
             total_pages: Number(
               data.pagination?.total_pages ?? 1
             ),
@@ -177,6 +156,7 @@ function AuditTrail() {
     search,
     categoryFilter,
     statusFilter,
+    range,
     page,
   ]);
 
@@ -189,6 +169,7 @@ function AuditTrail() {
   }, [
     categoryFilter,
     statusFilter,
+    range,
   ]);
 
   // ---------------------------------------------------------
@@ -230,13 +211,13 @@ function AuditTrail() {
             </p>
           </div>
 
-          <button
-            type="button"
-            className="flex h-9 w-fit items-center gap-2 rounded-[7px] border border-[#e7e4ea] bg-white px-3 text-[12px] text-[#45454f] hover:bg-[#faf8fc]"
-          >
-            Last 30 days
-            <ChevronDown size={15} />
-          </button>
+          <RangeSelect
+            value={range}
+            onChange={(value) => {
+              setRange(value);
+              setPage(1);
+            }}
+          />
         </div>
       </section>
 
@@ -413,7 +394,6 @@ function AuditTrail() {
               </div>
             </div>
 
-            {/* Pagination */}
             <Pagination
               page={pagination.page}
               totalPages={pagination.total_pages}
@@ -424,6 +404,38 @@ function AuditTrail() {
           </>
         )}
       </section>
+    </div>
+  );
+}
+
+// =========================================================
+// RANGE SELECT
+// =========================================================
+
+function RangeSelect({ value, onChange }) {
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(event) =>
+          onChange(event.target.value)
+        }
+        className="h-9 appearance-none rounded-[7px] border border-[#e7e4ea] bg-white pl-3 pr-9 text-[12px] text-[#45454f] outline-none transition focus:border-[#b895d1] focus:ring-2 focus:ring-[#5f259f]/10"
+      >
+        {RANGE_OPTIONS.map((option) => (
+          <option
+            key={option.value}
+            value={option.value}
+          >
+            {option.label}
+          </option>
+        ))}
+      </select>
+
+      <ChevronDown
+        size={15}
+        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[#85818c]"
+      />
     </div>
   );
 }
@@ -488,7 +500,10 @@ function FilterSelect({
         }`}
       >
         {options.map((option) => (
-          <option key={option} value={option}>
+          <option
+            key={option}
+            value={option}
+          >
             {option}
           </option>
         ))}
@@ -608,29 +623,18 @@ function EventIcon({ category }) {
     );
   }
 
+  if (category === "Recovery") {
+    return (
+      <div className="grid h-7 w-7 shrink-0 place-items-center rounded-[7px] bg-[#f2eafa] text-[#5f259f]">
+        <Activity size={14} />
+      </div>
+    );
+  }
+
   return (
     <div className="grid h-7 w-7 shrink-0 place-items-center rounded-[7px] bg-[#f3eef7] text-[#5f259f]">
-      <ActivityIcon />
+      <Activity size={14} />
     </div>
-  );
-}
-
-// =========================================================
-// ACTIVITY ICON
-// =========================================================
-
-function ActivityIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path d="M3 12h4l3-8 4 16 3-8h4" />
-    </svg>
   );
 }
 
