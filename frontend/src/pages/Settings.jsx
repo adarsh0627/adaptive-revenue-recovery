@@ -1,8 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bell,
   Check,
-  ChevronDown,
   CircleCheck,
   KeyRound,
   Save,
@@ -13,19 +12,39 @@ import {
   Webhook,
 } from "lucide-react";
 
+const DEFAULT_SETTINGS = {
+  merchantName: "RevenueRecover",
+  email: "merchant@example.com",
+  minProbability: "0.50",
+  maxAttempts: "2",
+  contactLimit: "2",
+  approvalThreshold: "10000",
+  webhookEnabled: true,
+  notifications: true,
+};
+
+const STORAGE_KEY = "revenue-recover-settings";
+
 function Settings() {
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [saved, setSaved] = useState(false);
 
-  const [settings, setSettings] = useState({
-    merchantName: "RevenueRecover",
-    email: "merchant@example.com",
-    minProbability: "0.50",
-    maxAttempts: "2",
-    contactLimit: "2",
-    approvalThreshold: "10000",
-    webhookEnabled: true,
-    notifications: true,
-  });
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+
+      if (stored) {
+        const parsed = JSON.parse(stored);
+
+        setSettings({
+          ...DEFAULT_SETTINGS,
+          ...parsed,
+        });
+      }
+    } catch {
+      // Keep default settings if local storage is unavailable/corrupted.
+    }
+  }, []);
 
   const updateSetting = (key, value) => {
     setSettings((current) => ({
@@ -37,11 +56,16 @@ function Settings() {
   };
 
   const handleSave = () => {
-    setSaved(true);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      setSaved(true);
 
-    setTimeout(() => {
+      setTimeout(() => {
+        setSaved(false);
+      }, 2500);
+    } catch {
       setSaved(false);
-    }, 2500);
+    }
   };
 
   return (
@@ -64,6 +88,7 @@ function Settings() {
           </div>
 
           <button
+            type="button"
             onClick={handleSave}
             className="flex h-9 w-fit items-center gap-2 rounded-[7px] bg-[#5f259f] px-4 text-[11px] font-semibold text-white transition hover:bg-[#512087]"
           >
@@ -110,13 +135,12 @@ function Settings() {
             <Field
               label="Merchant name"
               value={settings.merchantName}
-              onChange={(value) =>
-                updateSetting("merchantName", value)
-              }
+              onChange={(value) => updateSetting("merchantName", value)}
             />
 
             <Field
               label="Email address"
+              type="email"
               value={settings.email}
               onChange={(value) => updateSetting("email", value)}
             />
@@ -132,19 +156,14 @@ function Settings() {
           <div className="rounded-[9px] border border-[#e7e4ea] bg-[#faf9fb] p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-[11px] font-semibold">
-                  Razorpay API
-                </p>
+                <p className="text-[11px] font-semibold">Razorpay API</p>
 
                 <p className="mt-1 text-[10px] text-[#6b6b75]">
                   Connected using configured API credentials.
                 </p>
               </div>
 
-              <StatusBadge
-                label="Connected"
-                green
-              />
+              <StatusBadge label="Connected" green />
             </div>
           </div>
 
@@ -154,9 +173,7 @@ function Settings() {
                 Environment
               </span>
 
-              <span className="text-[11px] font-semibold">
-                Test mode
-              </span>
+              <span className="text-[11px] font-semibold">Test mode</span>
             </div>
           </div>
         </SettingsCard>
@@ -165,7 +182,7 @@ function Settings() {
         <SettingsCard
           icon={SlidersHorizontal}
           title="Recovery engine"
-          description="Control how the adaptive recovery agent behaves."
+          description="Configure recovery policy values used by the console."
         >
           <div className="space-y-5">
             <NumberSetting
@@ -174,9 +191,10 @@ function Settings() {
               value={settings.minProbability}
               suffix="%"
               displayValue={`${Number(settings.minProbability) * 100}%`}
-              onChange={(value) =>
-                updateSetting("minProbability", value)
-              }
+              min="0"
+              max="1"
+              step="0.01"
+              onChange={(value) => updateSetting("minProbability", value)}
             />
 
             <NumberSetting
@@ -184,9 +202,10 @@ function Settings() {
               description="Maximum executable attempts for a payment."
               value={settings.maxAttempts}
               suffix="attempts"
-              onChange={(value) =>
-                updateSetting("maxAttempts", value)
-              }
+              min="1"
+              max="10"
+              step="1"
+              onChange={(value) => updateSetting("maxAttempts", value)}
             />
 
             <NumberSetting
@@ -194,9 +213,10 @@ function Settings() {
               description="Maximum customer contacts allowed in the period."
               value={settings.contactLimit}
               suffix="contacts"
-              onChange={(value) =>
-                updateSetting("contactLimit", value)
-              }
+              min="1"
+              max="10"
+              step="1"
+              onChange={(value) => updateSetting("contactLimit", value)}
             />
 
             <NumberSetting
@@ -204,9 +224,9 @@ function Settings() {
               description="Amounts above this threshold require approval."
               value={settings.approvalThreshold}
               suffix="INR"
-              onChange={(value) =>
-                updateSetting("approvalThreshold", value)
-              }
+              min="0"
+              step="100"
+              onChange={(value) => updateSetting("approvalThreshold", value)}
             />
           </div>
         </SettingsCard>
@@ -222,9 +242,7 @@ function Settings() {
               label="Webhook receiver"
               description="Accept verified Razorpay webhook events."
               enabled={settings.webhookEnabled}
-              onChange={(value) =>
-                updateSetting("webhookEnabled", value)
-              }
+              onChange={(value) => updateSetting("webhookEnabled", value)}
             />
 
             <div className="rounded-[9px] border border-[#e7e4ea] bg-[#faf9fb] p-4">
@@ -235,9 +253,7 @@ function Settings() {
                 />
 
                 <div className="min-w-0">
-                  <p className="text-[10px] font-semibold">
-                    Endpoint
-                  </p>
+                  <p className="text-[10px] font-semibold">Endpoint</p>
 
                   <p className="mt-1 break-all font-mono text-[9px] text-[#6b6b75]">
                     /webhooks/razorpay
@@ -257,10 +273,7 @@ function Settings() {
                 </p>
               </div>
 
-              <StatusBadge
-                label="Verified"
-                green
-              />
+              <StatusBadge label="Verified" green />
             </div>
           </div>
         </SettingsCard>
@@ -299,9 +312,7 @@ function Settings() {
             label="Recovery notifications"
             description="Receive notifications for important recovery events."
             enabled={settings.notifications}
-            onChange={(value) =>
-              updateSetting("notifications", value)
-            }
+            onChange={(value) => updateSetting("notifications", value)}
           />
 
           <div className="mt-3 rounded-[9px] border border-[#e7e4ea] bg-[#faf9fb] p-4">
@@ -341,8 +352,8 @@ function Settings() {
             </h3>
 
             <p className="mt-1 max-w-[800px] text-[10px] leading-5 text-[#6b6b75]">
-              Settings displayed here represent the recovery controls used
-              by the engine. High-value payments, low-probability actions,
+              Settings displayed here represent the recovery controls used by
+              the console. High-value payments, low-probability actions,
               maximum attempts and contact limits remain protected by
               guardrails.
             </p>
@@ -367,9 +378,7 @@ function SettingsCard({
         </div>
 
         <div>
-          <h2 className="text-[13px] font-semibold">
-            {title}
-          </h2>
+          <h2 className="text-[13px] font-semibold">{title}</h2>
 
           <p className="mt-1 text-[10px] leading-4 text-[#6b6b75]">
             {description}
@@ -377,9 +386,7 @@ function SettingsCard({
         </div>
       </div>
 
-      <div className="p-4 sm:p-5">
-        {children}
-      </div>
+      <div className="p-4 sm:p-5">{children}</div>
     </section>
   );
 }
@@ -388,6 +395,7 @@ function Field({
   label,
   value,
   onChange,
+  type = "text",
 }) {
   return (
     <label className="block">
@@ -396,6 +404,7 @@ function Field({
       </span>
 
       <input
+        type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="h-10 w-full rounded-[7px] border border-[#e1dde5] bg-white px-3 text-[11px] outline-none transition focus:border-[#5f259f] focus:ring-2 focus:ring-[#5f259f]/10"
@@ -411,14 +420,15 @@ function NumberSetting({
   onChange,
   suffix,
   displayValue,
+  min,
+  max,
+  step,
 }) {
   return (
     <div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-[11px] font-medium">
-            {label}
-          </p>
+          <p className="text-[11px] font-medium">{label}</p>
 
           <p className="mt-1 text-[9px] leading-4 text-[#85818c]">
             {description}
@@ -428,7 +438,9 @@ function NumberSetting({
         <div className="flex shrink-0 items-center rounded-[7px] border border-[#e1dde5] bg-white">
           <input
             type="number"
-            min="0"
+            min={min}
+            max={max}
+            step={step}
             value={value}
             onChange={(event) => onChange(event.target.value)}
             className="h-9 w-[78px] bg-transparent px-3 text-right text-[11px] font-semibold outline-none"
@@ -452,9 +464,7 @@ function ToggleRow({
   return (
     <div className="flex items-center justify-between gap-4 rounded-[9px] border border-[#e7e4ea] p-4">
       <div>
-        <p className="text-[10px] font-semibold">
-          {label}
-        </p>
+        <p className="text-[10px] font-semibold">{label}</p>
 
         <p className="mt-1 text-[9px] leading-4 text-[#6b6b75]">
           {description}
@@ -468,6 +478,7 @@ function ToggleRow({
           enabled ? "bg-[#5f259f]" : "bg-[#d8d4dc]"
         }`}
         aria-label={`Toggle ${label}`}
+        aria-pressed={enabled}
       >
         <span
           className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition ${
@@ -509,9 +520,7 @@ function SecurityRow({
   return (
     <div className="flex items-center justify-between gap-4 rounded-[9px] border border-[#e7e4ea] p-4">
       <div>
-        <p className="text-[10px] font-semibold">
-          {title}
-        </p>
+        <p className="text-[10px] font-semibold">{title}</p>
 
         <p className="mt-1 text-[9px] leading-4 text-[#6b6b75]">
           {description}
