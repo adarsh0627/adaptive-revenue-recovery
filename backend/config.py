@@ -45,25 +45,25 @@ ANTHROPIC_API_KEY = os.getenv(
 
 API_HOST = os.getenv(
     "API_HOST",
-    "127.0.0.1",
+    "0.0.0.0",
 )
 
 API_PORT = int(
     os.getenv(
         "API_PORT",
-        "8001",
+        os.getenv("PORT", "8001"),
     )
 )
 
 WEBHOOK_HOST = os.getenv(
     "WEBHOOK_HOST",
-    "127.0.0.1",
+    "0.0.0.0",
 )
 
 WEBHOOK_PORT = int(
     os.getenv(
         "WEBHOOK_PORT",
-        "8000",
+        os.getenv("PORT", "8000"),
     )
 )
 

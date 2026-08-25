@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   Activity,
   BarChart3,
@@ -10,6 +11,8 @@ import {
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
+import API_BASE_URL from "../api";
+
 const navigation = [
   {
     section: "OVERVIEW",
@@ -21,7 +24,6 @@ const navigation = [
       {
         label: "Failed Payments",
         icon: CreditCard,
-        count: 24,
       },
       {
         label: "Recovery Activity",
@@ -54,6 +56,35 @@ const navigation = [
 ];
 
 function Sidebar({ open = false, onClose }) {
+  const [failedPaymentCount, setFailedPaymentCount] = useState(null);
+
+  useEffect(() => {
+    async function loadFailedPaymentCount() {
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/failed-payments?status=failed&page=1&page_size=1`
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to load failed payment count");
+        }
+
+        const data = await response.json();
+
+        setFailedPaymentCount(data.pagination?.total ?? 0);
+      } catch (error) {
+        console.error(
+          "Failed to load sidebar payment count:",
+          error
+        );
+
+        setFailedPaymentCount(null);
+      }
+    }
+
+    loadFailedPaymentCount();
+  }, []);
+
   return (
     <>
       {/* Mobile backdrop */}
@@ -71,6 +102,7 @@ function Sidebar({ open = false, onClose }) {
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
+        {/* Brand */}
         <div className="flex h-[76px] items-center justify-between border-b border-[#e7e4ea] px-[22px]">
           <div className="flex items-center gap-3">
             <div className="grid h-[35px] w-[35px] place-items-center rounded-[10px] bg-gradient-to-br from-[#5f259f] to-[#7b3fc6] text-white shadow-[0_7px_20px_rgba(95,37,159,0.22)]">
@@ -98,6 +130,7 @@ function Sidebar({ open = false, onClose }) {
           </button>
         </div>
 
+        {/* Navigation */}
         <nav className="px-[13px] py-[25px]">
           {navigation.map((group) => (
             <div key={group.section}>
@@ -138,11 +171,13 @@ function Sidebar({ open = false, onClose }) {
 
                     <span>{item.label}</span>
 
-                    {item.count && (
-                      <span className="ml-auto grid min-w-[22px] place-items-center rounded-[5px] bg-[#f0edf4] px-1.5 py-1 text-[10px] text-[#6b6b75]">
-                        {item.count}
-                      </span>
-                    )}
+                    {/* Dynamic failed payment count */}
+                    {item.label === "Failed Payments" &&
+                      failedPaymentCount !== null && (
+                        <span className="ml-auto grid min-w-[22px] place-items-center rounded-[5px] bg-[#f0edf4] px-1.5 py-1 text-[10px] text-[#6b6b75]">
+                          {failedPaymentCount.toLocaleString("en-IN")}
+                        </span>
+                      )}
                   </NavLink>
                 );
               })}
@@ -150,6 +185,7 @@ function Sidebar({ open = false, onClose }) {
           ))}
         </nav>
 
+        {/* Engine status */}
         <div className="mt-auto border-t border-[#e7e4ea] p-[15px]">
           <div className="flex items-center gap-2 rounded-[9px] border border-[#e7e4ea] bg-[#faf9fb] p-3">
             <span className="h-[7px] w-[7px] rounded-full bg-[#16a34a] shadow-[0_0_8px_rgba(22,163,74,0.45)]" />
