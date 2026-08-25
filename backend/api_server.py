@@ -5,6 +5,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from config import API_HOST, API_PORT, CORS_ORIGIN
+
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 
@@ -13,9 +16,8 @@ LIVE_STATE_FILE = DATA_DIR / "live_recovery_attempts.json"
 RECOVERY_ATTEMPTS_FILE = DATA_DIR / "recovery_attempts_v3.csv"
 GUARDRAILS_FILE = DATA_DIR / "adaptive_engine_v2_guardrails.csv"
 
-HOST = "127.0.0.1"
-PORT = 8001
-
+HOST = API_HOST
+PORT = API_PORT
 
 # ---------------------------------------------------------
 # DATA LOADERS
@@ -1516,7 +1518,7 @@ def json_response(
 
     handler.send_header(
         "Access-Control-Allow-Origin",
-        "http://localhost:5173",
+        CORS_ORIGIN,
     )
 
     handler.send_header(
@@ -1550,7 +1552,7 @@ class APIHandler(
 
         self.send_header(
             "Access-Control-Allow-Origin",
-            "http://localhost:5173",
+            CORS_ORIGIN,
         )
 
         self.send_header(

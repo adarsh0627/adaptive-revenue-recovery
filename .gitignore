@@ -28,3 +28,12 @@ Thumbs.db
 # Local datasets and runtime state
 data/*.csv
 data/*.json
+
+# Legacy backup source files
+backend/agent/agent_v3_pre_live_state_backup.py
+backend/audit_policy_v3_v2.py
+backend/engine/live_engine_v3_raw_backup.py
+backend/webhook_server_v3_pre_live_state.py
+backend/webhook_server_v3_pre_state.py
+backend/webhook_server_v3_pre_state_backup.py
+backend/webhook_server_v3_pre_state_context_backup.py

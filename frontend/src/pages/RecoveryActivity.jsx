@@ -12,7 +12,7 @@ import {
   XCircle,
 } from "lucide-react";
 
-const API_BASE_URL = "http://127.0.0.1:8001";
+import API_BASE_URL from "../api";
 
 function RecoveryActivity() {
   const [activities, setActivities] = useState([]);

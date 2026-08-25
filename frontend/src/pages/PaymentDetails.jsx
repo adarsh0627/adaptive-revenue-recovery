@@ -12,7 +12,7 @@ import {
   XCircle,
 } from "lucide-react";
 
-const API_URL = "http://127.0.0.1:8001";
+import API_URL from "../api";
 
 const statusStyles = {
   Failed: "bg-[rgba(220,38,38,0.08)] text-[#dc2626]",

@@ -3,7 +3,6 @@
 import hashlib
 import hmac
 import json
-import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -18,15 +17,22 @@ load_dotenv(ROOT / ".env")
 from agent.agent import RecoveryAgent
 from agent.guardrails import Guardrails
 from agent.tools import RazorpayTestClient, RazorpayRecoveryProvider
-from config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, require_razorpay_credentials
+from config import (
+    RAZORPAY_KEY_ID,
+    RAZORPAY_KEY_SECRET,
+    RAZORPAY_WEBHOOK_SECRET,
+    WEBHOOK_HOST,
+    WEBHOOK_PORT,
+    require_razorpay_credentials,
+)
 from engine.live_engine import LiveRecoveryEngine
 from state import RecoveryState
 from live_state import LiveRecoveryState
 from live_links import LiveRecoveryLinks
 
-WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
-HOST = "127.0.0.1"
-PORT = 8000
+WEBHOOK_SECRET = RAZORPAY_WEBHOOK_SECRET
+HOST = WEBHOOK_HOST
+PORT = WEBHOOK_PORT
 DATA_PATH = ROOT / "data" / "payments_v3.csv"
 
 processed_event_ids = set()

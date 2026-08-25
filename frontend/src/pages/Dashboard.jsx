@@ -13,7 +13,7 @@ import RecoveryChart from "../components/RecoveryChart";
 import EngineIntelligence from "../components/EngineIntelligence";
 import ActivityTable from "../components/ActivityTable";
 
-const API_BASE_URL = "http://127.0.0.1:8001";
+import API_BASE_URL from "../api";
 
 function Dashboard() {
   const [dashboardData, setDashboardData] = useState(null);

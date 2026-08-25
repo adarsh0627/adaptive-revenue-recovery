@@ -10,7 +10,7 @@ import {
   WalletCards,
 } from "lucide-react";
 
-const API_BASE = "http://127.0.0.1:8001";
+import API_BASE from "../api";
 
 function Analytics() {
   const [performance, setPerformance] = useState(null);
