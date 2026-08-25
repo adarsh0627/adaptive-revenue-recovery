@@ -17,17 +17,20 @@ frontend/dist/
 # Python cache
 .pytest_cache/
 
-# Local runtime data
-data/live_recovery_attempts.json
+# Synthetic datasets required by the application
+data/*.csv
+!data/customers_v3.csv
+!data/payments_v3.csv
+!data/recovery_attempts_v3.csv
+
+# Local runtime state
+data/*.json
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-# Local datasets and runtime state
-data/*.csv
-data/*.json
 
 # Legacy backup source files
 backend/agent/agent_v3_pre_live_state_backup.py
