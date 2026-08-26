@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   CheckCircle2,
   CircleDollarSign,
+  ChevronDown,
   ChevronRight,
   Sparkles,
 } from "lucide-react";
@@ -15,8 +16,17 @@ import ActivityTable from "../components/ActivityTable";
 
 import API_BASE_URL from "../api";
 
+const DATE_RANGES = [
+  { value: "24h", label: "Last 24 hours" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "Last 90 days" },
+  { value: "all", label: "All available" },
+];
+
 function Dashboard() {
   const [dashboardData, setDashboardData] = useState(null);
+  const [range, setRange] = useState("30d");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -26,8 +36,11 @@ function Dashboard() {
         setLoading(true);
         setError("");
 
+        const params = new URLSearchParams();
+        params.set("range", range);
+
         const response = await fetch(
-          `${API_BASE_URL}/api/dashboard`
+          `${API_BASE_URL}/api/dashboard?${params.toString()}`
         );
 
         if (!response.ok) {
@@ -37,7 +50,6 @@ function Dashboard() {
         }
 
         const data = await response.json();
-
         setDashboardData(data);
       } catch (err) {
         console.error("Dashboard API error:", err);
@@ -48,7 +60,7 @@ function Dashboard() {
     }
 
     fetchDashboard();
-  }, []);
+  }, [range]);
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat("en-IN", {
@@ -57,6 +69,10 @@ function Dashboard() {
       maximumFractionDigits: 2,
     }).format(amount || 0);
   };
+
+  const selectedRangeLabel =
+    DATE_RANGES.find((item) => item.value === range)?.label ||
+    "Last 30 days";
 
   if (loading) {
     return (
@@ -92,7 +108,6 @@ function Dashboard() {
 
   return (
     <div className="max-w-[1500px] p-4 sm:p-6 lg:p-[32px_34px_50px]">
-      {/* Page heading */}
       <section className="mb-6 flex flex-col gap-4 sm:mb-[27px] sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="mb-2 text-[9px] font-extrabold tracking-[1.5px] text-[#5f259f]">
@@ -109,13 +124,27 @@ function Dashboard() {
           </p>
         </div>
 
-        <button className="flex h-9 w-fit items-center gap-2 rounded-[7px] border border-[#e7e4ea] bg-white px-3 text-[11px] text-[#45454f] hover:bg-[#faf8fc]">
-          Last 30 days
-          <ChevronRight size={16} />
-        </button>
+        <div className="relative">
+          <select
+            value={range}
+            onChange={(event) => setRange(event.target.value)}
+            className="h-9 w-full appearance-none rounded-[7px] border border-[#e7e4ea] bg-white pl-3 pr-9 text-[11px] text-[#45454f] outline-none hover:bg-[#faf8fc] focus:border-[#b895d1] sm:w-[155px]"
+            aria-label="Dashboard date range"
+          >
+            {DATE_RANGES.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+
+          <ChevronDown
+            size={15}
+            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#85818c]"
+          />
+        </div>
       </section>
 
-      {/* KPI cards */}
       <section className="mb-[14px] grid grid-cols-1 gap-[14px] sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard
           label="Failed payments"
@@ -174,16 +203,13 @@ function Dashboard() {
         />
       </section>
 
-      {/* Recovery performance + engine intelligence */}
       <section className="mb-[14px] grid grid-cols-1 gap-[14px] xl:grid-cols-[minmax(0,1.65fr)_minmax(330px,1fr)]">
         <RecoveryChart />
-
         <EngineIntelligence
           probability={dashboardData.avg_recovery_probability}
         />
       </section>
 
-      {/* Activity */}
       <ActivityTable />
     </div>
   );

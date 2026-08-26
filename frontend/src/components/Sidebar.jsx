@@ -62,7 +62,7 @@ function Sidebar({ open = false, onClose }) {
     async function loadFailedPaymentCount() {
       try {
         const response = await fetch(
-          `${API_BASE_URL}/api/failed-payments?status=failed&page=1&page_size=1`
+          `${API_BASE_URL}/api/failed-payments?status=failed&range=all&page=1&page_size=1`
         );
 
         if (!response.ok) {

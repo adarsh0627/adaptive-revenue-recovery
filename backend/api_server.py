@@ -122,6 +122,44 @@ def calculate_probability(failure_reason):
     return 59.0
 
 
+def normalize_date_range(date_range):
+    value = str(date_range or "30d").strip().lower()
+    return value if value in {"24h", "7d", "30d", "90d", "all"} else "30d"
+
+
+def range_cutoff(date_range, now=None):
+    """
+    Return the cutoff relative to the real current time.
+
+    A date range such as "Last 24 hours" must not be anchored to the
+    newest record in the dataset. Otherwise old data can incorrectly
+    appear as recent data when the dataset has not received a new
+    payment for several days.
+    """
+    date_range = normalize_date_range(date_range)
+
+    if date_range == "all":
+        return None
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    days_map = {
+        "24h": 1,
+        "7d": 7,
+        "30d": 30,
+        "90d": 90,
+    }
+
+    return now - timedelta(days=days_map[date_range])
+
+
+def in_date_range(timestamp, cutoff):
+    if cutoff is None:
+        return True
+    return parse_timestamp(timestamp) >= cutoff
+
+
 def parse_timestamp(timestamp):
     if not timestamp:
         return datetime.min.replace(
@@ -154,9 +192,44 @@ def parse_timestamp(timestamp):
 # DASHBOARD
 # ---------------------------------------------------------
 
-def build_dashboard():
+def build_dashboard(date_range="30d"):
+    date_range = normalize_date_range(date_range)
+
     historical = load_payments()
     live_state = load_live_state()
+
+    historical_timestamps = [
+        payment.get("timestamp")
+        for payment in historical
+    ]
+
+    live_timestamps = [
+        attempts[-1].get("timestamp")
+        for attempts in live_state.values()
+        if attempts
+    ]
+
+    cutoff = range_cutoff(date_range)
+
+    historical = [
+        payment
+        for payment in historical
+        if in_date_range(payment.get("timestamp"), cutoff)
+    ]
+
+    live_records = []
+    for payment_id, attempts in live_state.items():
+        if not attempts:
+            continue
+
+        last_attempt = attempts[-1]
+
+        if not in_date_range(last_attempt.get("timestamp"), cutoff):
+            continue
+
+        live_records.append(
+            (payment_id, attempts)
+        )
 
     historical_failed = len(historical)
 
@@ -176,17 +249,13 @@ def build_dashboard():
         ).lower() == "true"
     )
 
-    live_failed = len(live_state)
+    live_failed = len(live_records)
 
     live_recovered = 0
     live_pending = 0
     live_revenue = 0.0
 
-    for attempts in live_state.values():
-
-        if not attempts:
-            continue
-
+    for _, attempts in live_records:
         last_attempt = attempts[-1]
         result = last_attempt.get("result")
 
@@ -240,77 +309,206 @@ def build_dashboard():
             "historical_payments": historical_failed,
             "live_payments": live_failed,
         },
+        "date_range": date_range,
     }
-
 
 # ---------------------------------------------------------
 # RECOVERY ACTIVITY
 # ---------------------------------------------------------
 
-def build_recovery_activity():
+def build_recovery_activity(
+    search="",
+    status="all",
+    action="all",
+    date_range="30d",
+    page=1,
+    page_size=25,
+):
+    historical_attempts = []
+
+    if RECOVERY_ATTEMPTS_FILE.exists():
+        with RECOVERY_ATTEMPTS_FILE.open(
+            "r", encoding="utf-8", newline=""
+        ) as file:
+            reader = csv.DictReader(file)
+            for attempt in reader:
+                payment_id = attempt.get("payment_id", "")
+                action_key = attempt.get("action", "unknown")
+                result = attempt.get("result", "unknown")
+                try:
+                    amount = float(attempt.get("recovered_amount", 0) or 0)
+                except (ValueError, TypeError):
+                    amount = 0.0
+                try:
+                    attempt_number = int(attempt.get("attempt_number", 1) or 1)
+                except (ValueError, TypeError):
+                    attempt_number = 1
+                historical_attempts.append({
+                    "id": attempt.get("attempt_id") or f"{payment_id}-ATTEMPT-{attempt_number}",
+                    "payment_id": payment_id,
+                    "action": format_action(action_key),
+                    "action_key": action_key,
+                    "amount": amount,
+                    "status": format_status(result),
+                    "status_key": result,
+                    "timestamp": attempt.get("timestamp"),
+                    "attempt_number": attempt_number,
+                    "source": "historical",
+                })
+
     live_state = load_live_state()
-    activities = []
-
+    live_activities = []
     for payment_id, attempts in live_state.items():
-
         if not attempts:
             continue
-
         for attempt in attempts:
+            result = attempt.get("result", "unknown")
+            action_key = attempt.get("action", "unknown")
+            try:
+                amount = float(attempt.get("recovered_amount") or 0)
+            except (ValueError, TypeError):
+                amount = 0.0
+            live_activities.append({
+                "id": f"{payment_id}-LIVE-ATTEMPT-{attempt.get('attempt_number', 1)}",
+                "payment_id": payment_id,
+                "action": format_action(action_key),
+                "action_key": action_key,
+                "amount": amount,
+                "status": format_status(result),
+                "status_key": result,
+                "timestamp": attempt.get("timestamp"),
+                "attempt_number": attempt.get("attempt_number"),
+                "source": "live",
+            })
 
-            result = attempt.get(
-                "result",
-                "unknown",
-            )
-
-            activities.append(
-                {
-                    "id": payment_id,
-
-                    "action": format_action(
-                        attempt.get(
-                            "action",
-                            "unknown",
-                        )
-                    ),
-
-                    "action_key": attempt.get(
-                        "action",
-                        "unknown",
-                    ),
-
-                    "amount": float(
-                        attempt.get(
-                            "recovered_amount"
-                        ) or 0
-                    ),
-
-                    "status": format_status(
-                        result
-                    ),
-
-                    "status_key": result,
-
-                    "timestamp": attempt.get(
-                        "timestamp"
-                    ),
-
-                    "attempt_number": attempt.get(
-                        "attempt_number"
-                    ),
-                }
-            )
-
+    live_payment_ids = {
+        item["payment_id"] for item in live_activities if item.get("payment_id")
+    }
+    historical_activities = [
+        item for item in historical_attempts
+        if item.get("payment_id") not in live_payment_ids
+    ]
+    activities = historical_activities + live_activities
     activities.sort(
-        key=lambda item: parse_timestamp(
-            item.get("timestamp")
-        ),
+        key=lambda item: parse_timestamp(item.get("timestamp")),
         reverse=True,
     )
 
+    date_range = str(date_range or "30d").strip().lower()
+    if date_range not in {"24h", "7d", "30d", "90d", "all"}:
+        date_range = "30d"
+
+    # -----------------------------------------------------
+    # DATE RANGE
+    # -----------------------------------------------------
+
+    date_filtered = activities
+
+    if date_range != "all":
+
+        days_map = {
+            "24h": 1,
+            "7d": 7,
+            "30d": 30,
+            "90d": 90,
+        }
+
+        days = days_map.get(
+            date_range,
+            30,
+        )
+
+        # IMPORTANT:
+        # Date ranges are calculated from the actual current
+        # UTC time, NOT from the latest activity timestamp.
+        now_utc = datetime.now(timezone.utc)
+
+        cutoff = (
+            now_utc
+            - timedelta(days=days)
+        )
+
+        date_filtered = [
+            activity
+            for activity in activities
+            if parse_timestamp(
+                activity.get("timestamp")
+            ) >= cutoff
+        ]
+
+    normalized_search = str(search or "").strip().lower()
+    normalized_status = str(status or "all").strip().lower()
+    normalized_action = str(action or "all").strip().lower()
+    filtered = []
+
+    for item in date_filtered:
+        if normalized_search:
+            searchable = " ".join(
+                str(item.get(field) or "")
+                for field in [
+                    "id", "payment_id", "action", "action_key",
+                    "status", "status_key", "source",
+                ]
+            ).lower()
+            if normalized_search not in searchable:
+                continue
+        if (
+            normalized_status != "all"
+            and str(item.get("status_key", "")).lower() != normalized_status
+        ):
+            continue
+        if (
+            normalized_action != "all"
+            and str(item.get("action_key", "")).lower() != normalized_action
+        ):
+            continue
+        filtered.append(item)
+
+    successful = sum(1 for item in filtered if item.get("status_key") == "success")
+    recovered_revenue = sum(
+        float(item.get("amount") or 0)
+        for item in filtered
+        if item.get("status_key") == "success"
+    )
+    total_filtered = len(filtered)
+    success_rate = (successful / total_filtered) * 100 if total_filtered else 0
+
+    try:
+        page = max(int(page), 1)
+    except (ValueError, TypeError):
+        page = 1
+    try:
+        page_size = min(max(int(page_size), 1), 100)
+    except (ValueError, TypeError):
+        page_size = 25
+
+    total = len(filtered)
+    total_pages = ((total + page_size - 1) // page_size) if total else 1
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    paginated = filtered[start:start + page_size]
+
     return {
-        "activities": activities,
-        "count": len(activities),
+        "activities": paginated,
+        "summary": {
+            "total": total,
+            "successful": successful,
+            "success_rate": round(success_rate, 1),
+            "recovered_revenue": round(recovered_revenue, 2),
+        },
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+        "filters": {
+            "search": search,
+            "status": status,
+            "action": action,
+            "date_range": date_range,
+        },
     }
 
 
@@ -322,6 +520,7 @@ def build_failed_payments(
     search="",
     status="all",
     method="all",
+    date_range="30d",
     page=1,
     page_size=25,
 ):
@@ -490,6 +689,16 @@ def build_failed_payments(
         reverse=True,
     )
 
+    date_range = normalize_date_range(date_range)
+
+    cutoff = range_cutoff(date_range)
+
+    date_filtered = [
+        item
+        for item in records
+        if in_date_range(item.get("timestamp"), cutoff)
+    ]
+
     # -----------------------------------------------------
     # FILTER
     # -----------------------------------------------------
@@ -500,7 +709,7 @@ def build_failed_payments(
 
     filtered = []
 
-    for record in records:
+    for record in date_filtered:
 
         if normalized_search:
 
@@ -581,8 +790,41 @@ def build_failed_payments(
         start:end
     ]
 
+    summary_total = len(date_filtered)
+    summary_recovered = sum(
+        1
+        for item in date_filtered
+        if item.get("status_key") == "success"
+    )
+    summary_failed = sum(
+        1
+        for item in date_filtered
+        if item.get("status_key") == "failed"
+    )
+    summary_pending = sum(
+        1
+        for item in date_filtered
+        if item.get("status_key") == "pending"
+    )
+
+    summary_recovery_rate = (
+        (summary_recovered / summary_total) * 100
+        if summary_total
+        else 0
+    )
+
     return {
         "payments": paginated,
+        "summary": {
+            "count": summary_total,
+            "failed": summary_failed,
+            "recovered": summary_recovered,
+            "pending": summary_pending,
+            "recovery_rate": round(
+                summary_recovery_rate,
+                1,
+            ),
+        },
         "pagination": {
             "page": page,
             "page_size": page_size,
@@ -593,6 +835,7 @@ def build_failed_payments(
             "search": search,
             "status": status,
             "method": method,
+            "date_range": date_range,
         },
     }
 
@@ -1290,46 +1533,14 @@ def build_audit_trail(
     # DATE RANGE
     # -----------------------------------------------------
 
-    date_filtered = events
+    date_range = normalize_date_range(date_range)
+    cutoff = range_cutoff(date_range)
 
-    if date_range != "all" and events:
-
-        latest_timestamp = max(
-            (
-                parse_timestamp(
-                    event.get("timestamp")
-                )
-                for event in events
-            ),
-            default=datetime.now(
-                timezone.utc
-            ),
-        )
-
-        days_map = {
-            "24h": 1,
-            "7d": 7,
-            "30d": 30,
-            "90d": 90,
-        }
-
-        days = days_map.get(
-            date_range,
-            30,
-        )
-
-        cutoff = (
-            latest_timestamp
-            - timedelta(days=days)
-        )
-
-        date_filtered = [
-            event
-            for event in events
-            if parse_timestamp(
-                event.get("timestamp")
-            ) >= cutoff
-        ]
+    date_filtered = [
+        event
+        for event in events
+        if in_date_range(event.get("timestamp"), cutoff)
+    ]
 
     # -----------------------------------------------------
     # SUMMARY
@@ -1604,11 +1815,17 @@ class APIHandler(
         if path == "/api/dashboard":
 
             try:
+                date_range = query.get(
+                    "range",
+                    ["30d"],
+                )[0]
 
                 json_response(
                     self,
                     200,
-                    build_dashboard(),
+                    build_dashboard(
+                        date_range=date_range,
+                    ),
                 )
 
             except Exception as exc:
@@ -1634,24 +1851,31 @@ class APIHandler(
         if path == "/api/recovery-activity":
 
             try:
+                search = query.get("search", [""])[0]
+                status = query.get("status", ["all"])[0]
+                action = query.get("action", ["all"])[0]
+                date_range = query.get("range", ["30d"])[0]
+                page = query.get("page", ["1"])[0]
+                page_size = query.get("page_size", ["25"])[0]
 
-                json_response(
-                    self,
-                    200,
-                    build_recovery_activity(),
+                result = build_recovery_activity(
+                    search=search,
+                    status=status,
+                    action=action,
+                    date_range=date_range,
+                    page=page,
+                    page_size=page_size,
                 )
 
-            except Exception as exc:
+                json_response(self, 200, result)
 
+            except Exception as exc:
                 json_response(
                     self,
                     500,
                     {
-                        "error":
-                            "recovery_activity_failed",
-
-                        "message":
-                            str(exc),
+                        "error": "recovery_activity_failed",
+                        "message": str(exc),
                     },
                 )
 
@@ -1680,6 +1904,11 @@ class APIHandler(
                     ["all"],
                 )[0]
 
+                date_range = query.get(
+                    "range",
+                    ["30d"],
+                )[0]
+
                 page = query.get(
                     "page",
                     ["1"],
@@ -1694,6 +1923,7 @@ class APIHandler(
                     search=search,
                     status=status,
                     method=method,
+                    date_range=date_range,
                     page=page,
                     page_size=page_size,
                 )
@@ -1822,80 +2052,6 @@ class APIHandler(
         if path.startswith("/api/failed-payments/"):
 
             payment_id = path.split(
-                "/api/failed-payments/",
-                1,
-            )[1]
-
-            if not payment_id:
-                json_response(
-                    self,
-                    400,
-                    {
-                        "error": "payment_id_required",
-                    },
-                )
-                return
-
-            try:
-                details = build_payment_details(
-                    payment_id
-                )
-
-                if details is None:
-                    json_response(
-                        self,
-                        404,
-                        {
-                            "error": "payment_not_found",
-                            "payment_id": payment_id,
-                        },
-                    )
-                    return
-
-                json_response(
-                    self,
-                    200,
-                    details,
-                )
-
-            except Exception as exc:
-                json_response(
-                    self,
-                    500,
-                    {
-                        "error": "payment_details_failed",
-                        "message": str(exc),
-                    },
-                )
-
-            return
-
-            try:
-
-                json_response(
-                    self,
-                    200,
-                    build_recovery_performance(),
-                )
-
-            except Exception as exc:
-
-                json_response(
-                    self,
-                    500,
-                    {
-                        "error":
-                            "recovery_performance_failed",
-
-                        "message":
-                            str(exc),
-                    },
-                )
-
-            return
-
-            if path.startswith("/api/failed-payments/"):
-                payment_id = path.split(
                 "/api/failed-payments/",
                 1,
             )[1]

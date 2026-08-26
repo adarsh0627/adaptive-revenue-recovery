@@ -28,9 +28,11 @@ const statusStyles = {
 };
 
 const RANGE_OPTIONS = [
-  { label: "Last 7 days", value: "7" },
-  { label: "Last 30 days", value: "30" },
-  { label: "All time", value: "all" },
+  { label: "Last 24 hours", value: "24h" },
+  { label: "Last 7 days", value: "7d" },
+  { label: "Last 30 days", value: "30d" },
+  { label: "Last 90 days", value: "90d" },
+  { label: "All available", value: "all" },
 ];
 
 function AuditTrail() {
@@ -53,7 +55,7 @@ function AuditTrail() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
-  const [range, setRange] = useState("30");
+  const [range, setRange] = useState("30d");
 
   const [page, setPage] = useState(1);
 
