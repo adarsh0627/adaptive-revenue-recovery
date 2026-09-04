@@ -1108,3 +1108,16 @@ The goal is an adaptive, measurable, bounded, and explainable revenue recovery s
 **Track: AI Revenue Recovery**
 
 > Detect revenue at risk, determine the right intervention, execute a bounded recovery workflow, and measure recovery outcomes.
+
+## 🏗️ System Architecture
+
+![RevenueRecover Architecture](docs/architecture.png)
+
+RevenueRecover follows a layered architecture:
+
+1. **Data Sources** — Historical failed payments, customer context, recovery attempts, and live recovery state.
+2. **Adaptive Recovery Engine** — Analyzes failure signals, calculates recovery probability, selects actions, and applies stopping rules.
+3. **Recovery Actions** — Retry, Payment Link, Customer Message, Escalation, or Stop Recovery.
+4. **Audit & Activity Layer** — Records decisions, attempts, outcomes, and timestamps.
+5. **React Frontend** — Visualizes recovery performance through Dashboard, Failed Payments, Recovery Activity, Analytics, and Audit Trail.
+6. **External Integration** — Razorpay integration/webhooks enable real payment recovery workflows.
