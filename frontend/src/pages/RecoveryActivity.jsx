@@ -81,7 +81,7 @@ function RecoveryActivity() {
     total_pages: 1,
   });
 
-  const [range, setRange] = useState("30d");
+  const [range, setRange] = useState("all");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [actionFilter, setActionFilter] = useState("all");
@@ -632,3 +632,4 @@ function EmptyState() {
 }
 
 export default RecoveryActivity;
+

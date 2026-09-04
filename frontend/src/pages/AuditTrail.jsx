@@ -55,7 +55,7 @@ function AuditTrail() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
-  const [range, setRange] = useState("30d");
+  const [range, setRange] = useState("all");
 
   const [page, setPage] = useState(1);
 

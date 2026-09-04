@@ -118,7 +118,7 @@ function ActivityTable() {
     });
 
   const [dateRange, setDateRange] =
-    useState("30d");
+    useState("all");
 
   const [loading, setLoading] =
     useState(true);

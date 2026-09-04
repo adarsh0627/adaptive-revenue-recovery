@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -31,6 +32,7 @@ from live_state import LiveRecoveryState
 from live_links import LiveRecoveryLinks
 
 WEBHOOK_SECRET = RAZORPAY_WEBHOOK_SECRET
+LIVE_STATE_API_TOKEN = os.getenv("LIVE_STATE_API_TOKEN", "").strip()
 HOST = WEBHOOK_HOST
 PORT = WEBHOOK_PORT
 DATA_PATH = ROOT / "data" / "payments_v3.csv"
@@ -256,6 +258,28 @@ def process_captured_payment(payment: dict):
 
 class RazorpayWebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/api/live-state":
+            supplied_token = self.headers.get("X-Internal-Token", "")
+            if not LIVE_STATE_API_TOKEN or not hmac.compare_digest(
+                supplied_token, LIVE_STATE_API_TOKEN
+            ):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"unauthorized"}')
+                return
+
+            payload = json.dumps({
+                "live_state": live_state.data if live_state is not None else {}
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if self.path == "/health":
             body = b'{"status":"ok","service":"razorpay-webhook-receiver"}'
             self.send_response(200)

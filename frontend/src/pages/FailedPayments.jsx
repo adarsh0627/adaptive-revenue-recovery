@@ -105,7 +105,7 @@ function FailedPayments() {
     total_pages: 1,
   });
 
-  const [range, setRange] = useState("30d");
+  const [range, setRange] = useState("all");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [methodFilter, setMethodFilter] = useState("all");
@@ -241,27 +241,27 @@ function FailedPayments() {
       <section className="mb-[14px] grid grid-cols-1 gap-[14px] sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard
           label="Total payments"
-          value={summary.count.toLocaleString("en-IN")}
+          value={(summary.total || 0).toLocaleString("en-IN")}
           icon={WalletCards}
         />
 
         <SummaryCard
           label="Failed payments"
-          value={summary.failed.toLocaleString("en-IN")}
+          value={(summary.failed || 0).toLocaleString("en-IN")}
           icon={AlertCircle}
           iconClass="bg-[rgba(220,38,38,0.08)] text-[#dc2626]"
         />
 
         <SummaryCard
           label="Recovered payments"
-          value={summary.recovered.toLocaleString("en-IN")}
+          value={(summary.recovered || 0).toLocaleString("en-IN")}
           icon={CheckCircle2}
           iconClass="bg-[rgba(22,163,74,0.09)] text-[#16a34a]"
         />
 
         <SummaryCard
           label="Recovery rate"
-          value={`${summary.recovery_rate}%`}
+          value={`${summary.recovery_rate || 0}%`}
           icon={ArrowUpRight}
           iconClass="bg-[rgba(8,126,164,0.08)] text-[#087ea4]"
         />
@@ -568,3 +568,4 @@ function SummaryCard({
 }
 
 export default FailedPayments;
+

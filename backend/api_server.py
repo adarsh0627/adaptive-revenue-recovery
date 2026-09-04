@@ -1,5 +1,8 @@
 import csv
 import json
+import os
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,7 +38,34 @@ def load_payments():
         return list(csv.DictReader(file))
 
 
+LIVE_STATE_URL = os.getenv("LIVE_STATE_URL", "").strip().rstrip("/")
+LIVE_STATE_API_TOKEN = os.getenv("LIVE_STATE_API_TOKEN", "").strip()
+
 def load_live_state():
+    """Load live recovery state from the webhook service in production.
+
+    The API and webhook services run as separate Render services, so they
+    cannot share a local JSON file. In local development, or when the remote
+    URL is not configured, fall back to the local file.
+    """
+    if LIVE_STATE_URL:
+        try:
+            headers = {"Accept": "application/json"}
+            if LIVE_STATE_API_TOKEN:
+                headers["X-Internal-Token"] = LIVE_STATE_API_TOKEN
+            request = Request(
+                f"{LIVE_STATE_URL}/api/live-state",
+                headers=headers,
+                method="GET",
+            )
+            with urlopen(request, timeout=3) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, dict) and isinstance(payload.get("live_state"), dict):
+                return payload["live_state"]
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+            pass
+        return {}
+
     if not LIVE_STATE_FILE.exists():
         return {}
 
@@ -112,52 +142,26 @@ def format_status(result):
 
 def calculate_probability(failure_reason):
     """
-    Current V3 dashboard uses a 59% average recovery
-    probability.
+    Estimate recovery probability based on the payment failure reason.
 
-    Until per-payment probability is exposed by the
-    recovery engine/API, use the same value for payment
-    records.
+    Higher probabilities are assigned to transient failures that are more
+    likely to succeed on retry. Lower probabilities indicate failures that
+    usually require customer intervention or a different payment method.
     """
-    return 59.0
 
-
-def normalize_date_range(date_range):
-    value = str(date_range or "30d").strip().lower()
-    return value if value in {"24h", "7d", "30d", "90d", "all"} else "30d"
-
-
-def range_cutoff(date_range, now=None):
-    """
-    Return the cutoff relative to the real current time.
-
-    A date range such as "Last 24 hours" must not be anchored to the
-    newest record in the dataset. Otherwise old data can incorrectly
-    appear as recent data when the dataset has not received a new
-    payment for several days.
-    """
-    date_range = normalize_date_range(date_range)
-
-    if date_range == "all":
-        return None
-
-    if now is None:
-        now = datetime.now(timezone.utc)
-
-    days_map = {
-        "24h": 1,
-        "7d": 7,
-        "30d": 30,
-        "90d": 90,
+    probabilities = {
+        "network_error": 82.0,
+        "bank_timeout": 76.0,
+        "insufficient_balance": 54.0,
+        "limit_exceeded": 41.0,
+        "card_declined": 32.0,
+        "expired_card": 18.0,
     }
 
-    return now - timedelta(days=days_map[date_range])
-
-
-def in_date_range(timestamp, cutoff):
-    if cutoff is None:
-        return True
-    return parse_timestamp(timestamp) >= cutoff
+    return probabilities.get(
+        str(failure_reason or "").strip().lower(),
+        50.0,
+    )
 
 
 def parse_timestamp(timestamp):
@@ -188,1005 +192,389 @@ def parse_timestamp(timestamp):
             )
 
 
+
+# ---------------------------------------------------------
+# DATE RANGE HELPERS
+# ---------------------------------------------------------
+
+DATE_RANGE_DELTAS = {
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+    "90d": timedelta(days=90),
+}
+
+def normalize_date_range(value, default="30d"):
+    value = str(value or default).strip().lower()
+    aliases = {"24": "24h", "1d": "24h", "7": "7d", "30": "30d", "90": "90d"}
+    value = aliases.get(value, value)
+    return value if value in DATE_RANGE_DELTAS or value == "all" else default
+
+def get_date_cutoff(date_range, now=None):
+    date_range = normalize_date_range(date_range)
+    if date_range == "all":
+        return None
+    return (now or datetime.now(timezone.utc)) - DATE_RANGE_DELTAS[date_range]
+
+def in_date_range(timestamp, date_range, now=None):
+    cutoff = get_date_cutoff(date_range, now)
+    return cutoff is None or parse_timestamp(timestamp) >= cutoff
+
 # ---------------------------------------------------------
 # DASHBOARD
 # ---------------------------------------------------------
 
 def build_dashboard(date_range="30d"):
     date_range = normalize_date_range(date_range)
-
-    historical = load_payments()
+    historical = [p for p in load_payments() if in_date_range(p.get("timestamp"), date_range)]
     live_state = load_live_state()
-
-    historical_timestamps = [
-        payment.get("timestamp")
-        for payment in historical
-    ]
-
-    live_timestamps = [
-        attempts[-1].get("timestamp")
-        for attempts in live_state.values()
-        if attempts
-    ]
-
-    cutoff = range_cutoff(date_range)
-
-    historical = [
-        payment
-        for payment in historical
-        if in_date_range(payment.get("timestamp"), cutoff)
-    ]
-
-    live_records = []
+    live_filtered = {}
     for payment_id, attempts in live_state.items():
         if not attempts:
             continue
-
-        last_attempt = attempts[-1]
-
-        if not in_date_range(last_attempt.get("timestamp"), cutoff):
-            continue
-
-        live_records.append(
-            (payment_id, attempts)
-        )
+        latest = max(attempts, key=lambda a: parse_timestamp(a.get("timestamp")))
+        if in_date_range(latest.get("timestamp"), date_range):
+            live_filtered[payment_id] = attempts
 
     historical_failed = len(historical)
+    historical_recovered = sum(1 for p in historical if str(p.get("recovered", "")).lower() == "true")
+    historical_revenue = sum(float(p.get("amount") or 0) for p in historical if str(p.get("recovered", "")).lower() == "true")
 
-    historical_recovered = sum(
-        1
-        for payment in historical
-        if str(
-            payment.get("recovered", "")
-        ).lower() == "true"
-    )
+    historical_probabilities = [
+        calculate_probability(p.get("failure_reason", "unknown"))
+        for p in historical
+    ]
 
-    historical_revenue = sum(
-        float(payment.get("amount") or 0)
-        for payment in historical
-        if str(
-            payment.get("recovered", "")
-        ).lower() == "true"
-    )
-
-    live_failed = len(live_records)
-
+    live_failed = len(live_filtered)
     live_recovered = 0
     live_pending = 0
     live_revenue = 0.0
-
-    for _, attempts in live_records:
-        last_attempt = attempts[-1]
-        result = last_attempt.get("result")
-
+    for attempts in live_filtered.values():
+        last = max(attempts, key=lambda a: parse_timestamp(a.get("timestamp")))
+        result = last.get("result")
         if result == "success":
             live_recovered += 1
-
-            live_revenue += float(
-                last_attempt.get(
-                    "recovered_amount"
-                ) or 0
-            )
-
+            live_revenue += float(last.get("recovered_amount") or 0)
         elif result == "pending":
             live_pending += 1
 
-    total_failed = (
-        historical_failed +
-        live_failed
+    all_probabilities = historical_probabilities
+
+    avg_recovery_probability = (
+        sum(all_probabilities) / len(all_probabilities)
+        if all_probabilities else 0
     )
 
-    total_recovered = (
-        historical_recovered +
-        live_recovered
-    )
-
-    recovered_revenue = (
-        historical_revenue +
-        live_revenue
-    )
-
-    recovery_rate = (
-        (total_recovered / total_failed) * 100
-        if total_failed
-        else 0
-    )
-
+    total_failed = historical_failed + live_failed
+    total_recovered = historical_recovered + live_recovered
+    recovered_revenue = historical_revenue + live_revenue
+    recovery_rate = (total_recovered / total_failed) * 100 if total_failed else 0
     return {
         "failed_payments": total_failed,
         "recovered_payments": total_recovered,
         "pending_recovery": live_pending,
-        "recovered_revenue": round(
-            recovered_revenue,
-            2,
-        ),
-        "recovery_rate": round(
-            recovery_rate,
-            1,
-        ),
-        "avg_recovery_probability": 59.0,
-        "source": {
-            "historical_payments": historical_failed,
-            "live_payments": live_failed,
-        },
-        "date_range": date_range,
+        "recovered_revenue": round(recovered_revenue, 2),
+        "recovery_rate": round(recovery_rate, 1),
+        "avg_recovery_probability": round(avg_recovery_probability, 1),
+        "source": {"historical_payments": historical_failed, "live_payments": live_failed},
+        "filters": {"date_range": date_range},
     }
 
-# ---------------------------------------------------------
-# RECOVERY ACTIVITY
-# ---------------------------------------------------------
 
-def build_recovery_activity(
-    search="",
-    status="all",
-    action="all",
-    date_range="30d",
-    page=1,
-    page_size=25,
-):
+def build_recovery_activity(search="", status="all", action="all", date_range="30d", page=1, page_size=25):
+    date_range = normalize_date_range(date_range)
+
+    payment_lookup = {
+        payment.get("payment_id"): payment
+        for payment in load_payments()
+        if payment.get("payment_id")
+    }
+
     historical_attempts = []
-
     if RECOVERY_ATTEMPTS_FILE.exists():
-        with RECOVERY_ATTEMPTS_FILE.open(
-            "r", encoding="utf-8", newline=""
-        ) as file:
-            reader = csv.DictReader(file)
-            for attempt in reader:
+        with RECOVERY_ATTEMPTS_FILE.open("r", encoding="utf-8", newline="") as file:
+            for attempt in csv.DictReader(file):
                 payment_id = attempt.get("payment_id", "")
+                payment = payment_lookup.get(payment_id, {})
+
                 action_key = attempt.get("action", "unknown")
                 result = attempt.get("result", "unknown")
-                try:
-                    amount = float(attempt.get("recovered_amount", 0) or 0)
-                except (ValueError, TypeError):
-                    amount = 0.0
-                try:
-                    attempt_number = int(attempt.get("attempt_number", 1) or 1)
-                except (ValueError, TypeError):
-                    attempt_number = 1
+
+                failure_reason = payment.get("failure_reason", "unknown")
+                probability = calculate_probability(failure_reason)
+                try: amount = float(attempt.get("recovered_amount", 0) or 0)
+                except (ValueError, TypeError): amount = 0.0
+                try: attempt_number = int(attempt.get("attempt_number", 1) or 1)
+                except (ValueError, TypeError): attempt_number = 1
                 historical_attempts.append({
                     "id": attempt.get("attempt_id") or f"{payment_id}-ATTEMPT-{attempt_number}",
                     "payment_id": payment_id,
                     "action": format_action(action_key),
                     "action_key": action_key,
                     "amount": amount,
+                    "probability": probability,
                     "status": format_status(result),
                     "status_key": result,
                     "timestamp": attempt.get("timestamp"),
                     "attempt_number": attempt_number,
                     "source": "historical",
                 })
-
-    live_state = load_live_state()
     live_activities = []
-    for payment_id, attempts in live_state.items():
-        if not attempts:
-            continue
-        for attempt in attempts:
+    for payment_id, attempts in load_live_state().items():
+        payment = payment_lookup.get(payment_id, {})
+
+        for attempt in attempts or []:
             result = attempt.get("result", "unknown")
             action_key = attempt.get("action", "unknown")
-            try:
-                amount = float(attempt.get("recovered_amount") or 0)
-            except (ValueError, TypeError):
-                amount = 0.0
+
+            failure_reason = payment.get("failure_reason", "unknown")
+            probability = calculate_probability(failure_reason)
+            try: amount = float(attempt.get("recovered_amount") or 0)
+            except (ValueError, TypeError): amount = 0.0
             live_activities.append({
-                "id": f"{payment_id}-LIVE-ATTEMPT-{attempt.get('attempt_number', 1)}",
-                "payment_id": payment_id,
-                "action": format_action(action_key),
-                "action_key": action_key,
-                "amount": amount,
-                "status": format_status(result),
-                "status_key": result,
-                "timestamp": attempt.get("timestamp"),
-                "attempt_number": attempt.get("attempt_number"),
-                "source": "live",
+                "id": f"{payment_id}-LIVE-ATTEMPT-{attempt.get('attempt_number', 1)}", "payment_id": payment_id,
+                "action": format_action(action_key), "action_key": action_key, "amount": amount,
+                "probability": probability,"status": format_status(result), "status_key": result, "timestamp": attempt.get("timestamp"),
+                "attempt_number": attempt.get("attempt_number"), "source": "live",
             })
+    live_payment_ids = {x["payment_id"] for x in live_activities if x.get("payment_id")}
+    activities = [x for x in historical_attempts if x.get("payment_id") not in live_payment_ids] + live_activities
+    activities.sort(key=lambda x: parse_timestamp(x.get("timestamp")), reverse=True)
+    date_filtered = [x for x in activities if in_date_range(x.get("timestamp"), date_range)]
 
-    live_payment_ids = {
-        item["payment_id"] for item in live_activities if item.get("payment_id")
-    }
-    historical_activities = [
-        item for item in historical_attempts
-        if item.get("payment_id") not in live_payment_ids
-    ]
-    activities = historical_activities + live_activities
-    activities.sort(
-        key=lambda item: parse_timestamp(item.get("timestamp")),
-        reverse=True,
-    )
-
-    date_range = str(date_range or "30d").strip().lower()
-    if date_range not in {"24h", "7d", "30d", "90d", "all"}:
-        date_range = "30d"
-
-    # -----------------------------------------------------
-    # DATE RANGE
-    # -----------------------------------------------------
-
-    date_filtered = activities
-
-    if date_range != "all":
-
-        days_map = {
-            "24h": 1,
-            "7d": 7,
-            "30d": 30,
-            "90d": 90,
-        }
-
-        days = days_map.get(
-            date_range,
-            30,
-        )
-
-        # IMPORTANT:
-        # Date ranges are calculated from the actual current
-        # UTC time, NOT from the latest activity timestamp.
-        now_utc = datetime.now(timezone.utc)
-
-        cutoff = (
-            now_utc
-            - timedelta(days=days)
-        )
-
-        date_filtered = [
-            activity
-            for activity in activities
-            if parse_timestamp(
-                activity.get("timestamp")
-            ) >= cutoff
-        ]
-
-    normalized_search = str(search or "").strip().lower()
-    normalized_status = str(status or "all").strip().lower()
-    normalized_action = str(action or "all").strip().lower()
+    q = str(search or "").strip().lower(); st = str(status or "all").strip().lower(); act = str(action or "all").strip().lower()
     filtered = []
-
     for item in date_filtered:
-        if normalized_search:
-            searchable = " ".join(
-                str(item.get(field) or "")
-                for field in [
-                    "id", "payment_id", "action", "action_key",
-                    "status", "status_key", "source",
-                ]
-            ).lower()
-            if normalized_search not in searchable:
-                continue
-        if (
-            normalized_status != "all"
-            and str(item.get("status_key", "")).lower() != normalized_status
-        ):
-            continue
-        if (
-            normalized_action != "all"
-            and str(item.get("action_key", "")).lower() != normalized_action
-        ):
-            continue
+        if q:
+            searchable = " ".join(str(item.get(f) or "") for f in ["id","payment_id","action","action_key","status","status_key","source"]).lower()
+            if q not in searchable: continue
+        if st != "all" and str(item.get("status_key", "")).lower() != st: continue
+        if act != "all" and str(item.get("action_key", "")).lower() != act: continue
         filtered.append(item)
 
-    successful = sum(1 for item in filtered if item.get("status_key") == "success")
-    recovered_revenue = sum(
-        float(item.get("amount") or 0)
-        for item in filtered
-        if item.get("status_key") == "success"
-    )
-    total_filtered = len(filtered)
-    success_rate = (successful / total_filtered) * 100 if total_filtered else 0
-
-    try:
-        page = max(int(page), 1)
-    except (ValueError, TypeError):
-        page = 1
-    try:
-        page_size = min(max(int(page_size), 1), 100)
-    except (ValueError, TypeError):
-        page_size = 25
-
+    successful = sum(1 for x in filtered if x.get("status_key") == "success")
+    recovered_revenue = sum(float(x.get("amount") or 0) for x in filtered if x.get("status_key") == "success")
     total = len(filtered)
+    try: page = max(int(page), 1)
+    except (ValueError, TypeError): page = 1
+    try: page_size = min(max(int(page_size), 1), 100)
+    except (ValueError, TypeError): page_size = 25
     total_pages = ((total + page_size - 1) // page_size) if total else 1
-    if page > total_pages:
-        page = total_pages
-    start = (page - 1) * page_size
-    paginated = filtered[start:start + page_size]
-
+    page = min(page, total_pages); start = (page - 1) * page_size
     return {
-        "activities": paginated,
-        "summary": {
-            "total": total,
-            "successful": successful,
-            "success_rate": round(success_rate, 1),
-            "recovered_revenue": round(recovered_revenue, 2),
-        },
-        "pagination": {
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-            "total_pages": total_pages,
-        },
-        "filters": {
-            "search": search,
-            "status": status,
-            "action": action,
-            "date_range": date_range,
-        },
+        "activities": filtered[start:start + page_size],
+        "summary": {"total": total, "successful": successful, "success_rate": round((successful / total) * 100, 1) if total else 0, "recovered_revenue": round(recovered_revenue, 2)},
+        "pagination": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages},
+        "filters": {"search": search, "status": status, "action": action, "date_range": date_range},
     }
 
 
-# ---------------------------------------------------------
-# FAILED PAYMENTS
-# ---------------------------------------------------------
-
-def build_failed_payments(
-    search="",
-    status="all",
-    method="all",
-    date_range="30d",
-    page=1,
-    page_size=25,
-):
-    historical = load_payments()
-    live_state = load_live_state()
-
-    records = []
-
-    # -----------------------------------------------------
-    # HISTORICAL PAYMENTS
-    # -----------------------------------------------------
-
-    for payment in historical:
-
-        payment_id = payment.get(
-            "payment_id",
-            "",
-        )
-
-        failure_reason = payment.get(
-            "failure_reason",
-            "unknown",
-        )
-
-        payment_method = payment.get(
-            "payment_method",
-            "Unknown",
-        )
-
-        recovered = (
-            str(
-                payment.get(
-                    "recovered",
-                    "",
-                )
-            ).lower()
-            == "true"
-        )
-
-        action = payment.get(
-            "initial_action",
-            "unknown",
-        )
-
-        record_status = (
-            "Recovered"
-            if recovered
-            else "Failed"
-        )
-
-        record = {
-            "payment_id": payment_id,
-
-            "customer_id": payment.get(
-                "customer_id"
-            ),
-
-            "amount": float(
-                payment.get(
-                    "amount"
-                ) or 0
-            ),
-
-            "payment_method": payment_method,
-
-            "failure_reason": failure_reason,
-
-            "timestamp": payment.get(
-                "timestamp"
-            ),
-
-            "probability": calculate_probability(
-                failure_reason
-            ),
-
-            "action": format_action(
-                action
-            ),
-
-            "action_key": action,
-
-            "status": record_status,
-
-            "status_key": (
-                "success"
-                if recovered
-                else "failed"
-            ),
-
-            "source": "historical",
-        }
-
-        records.append(record)
-
-    # -----------------------------------------------------
-    # LIVE PAYMENTS
-    # -----------------------------------------------------
-
-    for payment_id, attempts in live_state.items():
-
-        if not attempts:
-            continue
-
-        last_attempt = attempts[-1]
-
-        result = last_attempt.get(
-            "result",
-            "pending",
-        )
-
-        action = last_attempt.get(
-            "action",
-            "unknown",
-        )
-
-        recovered_amount = float(
-            last_attempt.get(
-                "recovered_amount"
-            ) or 0
-        )
-
-        live_status = format_status(result)
-
-        # Live webhook currently stores recovery state,
-        # not the complete original payment entity.
-        record = {
-            "payment_id": payment_id,
-
-            "customer_id": None,
-
-            "amount": recovered_amount,
-
-            "payment_method": "Wallet",
-
-            "failure_reason": "network_error",
-
-            "timestamp": last_attempt.get(
-                "timestamp"
-            ),
-
-            "probability": 59.0,
-
-            "action": format_action(
-                action
-            ),
-
-            "action_key": action,
-
-            "status": live_status,
-
-            "status_key": result,
-
-            "source": "live",
-        }
-
-        records.append(record)
-
-    # -----------------------------------------------------
-    # SORT
-    # -----------------------------------------------------
-
-    records.sort(
-        key=lambda item: parse_timestamp(
-            item.get("timestamp")
-        ),
-        reverse=True,
-    )
-
+def build_failed_payments(search="", status="all", method="all", date_range="30d", page=1, page_size=25):
     date_range = normalize_date_range(date_range)
-
-    cutoff = range_cutoff(date_range)
-
-    date_filtered = [
-        item
-        for item in records
-        if in_date_range(item.get("timestamp"), cutoff)
-    ]
-
-    # -----------------------------------------------------
-    # FILTER
-    # -----------------------------------------------------
-
-    normalized_search = (
-        search.strip().lower()
-    )
-
+    records = []
+    for payment in load_payments():
+        recovered = str(payment.get("recovered", "")).lower() == "true"
+        action = payment.get("initial_action", "unknown")
+        failure_reason = payment.get("failure_reason", "unknown")
+        records.append({
+            "payment_id": payment.get("payment_id", ""), "customer_id": payment.get("customer_id"),
+            "amount": float(payment.get("amount") or 0), "payment_method": payment.get("payment_method", "Unknown"),
+            "failure_reason": failure_reason, "timestamp": payment.get("timestamp"),
+            "probability": calculate_probability(failure_reason), "action": format_action(action), "action_key": action,
+            "status": "Recovered" if recovered else "Failed", "status_key": "success" if recovered else "failed", "source": "historical",
+        })
+    for payment_id, attempts in load_live_state().items():
+        if not attempts: continue
+        last = max(attempts, key=lambda a: parse_timestamp(a.get("timestamp"))); result = last.get("result", "pending"); action = last.get("action", "unknown")
+        records.append({
+            "payment_id": payment_id, "customer_id": None, "amount": float(last.get("recovered_amount") or 0), "payment_method": "Wallet",
+            "failure_reason": "network_error", "timestamp": last.get("timestamp"), "probability": 59.0,
+            "action": format_action(action), "action_key": action, "status": format_status(result), "status_key": result, "source": "live",
+        })
+    records.sort(key=lambda x: parse_timestamp(x.get("timestamp")), reverse=True)
+    q = str(search or "").strip().lower(); st = str(status or "all").strip().lower(); method = str(method or "all").strip().lower()
     filtered = []
-
-    for record in date_filtered:
-
-        if normalized_search:
-
-            searchable = " ".join(
-                str(record.get(field) or "")
-                for field in [
-                    "payment_id",
-                    "customer_id",
-                    "payment_method",
-                    "failure_reason",
-                    "action",
-                    "status",
-                ]
-            ).lower()
-
-            if normalized_search not in searchable:
-                continue
-
-        if (
-            status.lower() != "all"
-            and record["status"].lower()
-            != status.lower()
-        ):
-            continue
-
-        if (
-            method.lower() != "all"
-            and record["payment_method"].lower()
-            != method.lower()
-        ):
-            continue
-
+    for record in records:
+        if not in_date_range(record.get("timestamp"), date_range): continue
+        if q:
+            searchable = " ".join(str(record.get(f) or "") for f in ["payment_id","customer_id","payment_method","failure_reason","action","status"]).lower()
+            if q not in searchable: continue
+        if st != "all" and str(record.get("status", "")).lower() != st: continue
+        if method != "all" and str(record.get("payment_method", "")).lower() != method: continue
         filtered.append(record)
-
-    # -----------------------------------------------------
-    # PAGINATION
-    # -----------------------------------------------------
-
-    total = len(filtered)
-
-    try:
-        page = max(
-            int(page),
-            1,
-        )
-    except (ValueError, TypeError):
-        page = 1
-
-    try:
-        page_size = min(
-            max(
-                int(page_size),
-                1,
-            ),
-            100,
-        )
-    except (ValueError, TypeError):
-        page_size = 25
-
-    total_pages = (
-        (total + page_size - 1)
-        // page_size
-        if total
-        else 1
-    )
-
-    if page > total_pages:
-        page = total_pages
-
-    start = (
-        (page - 1)
-        * page_size
-    )
-
-    end = start + page_size
-
-    paginated = filtered[
-        start:end
-    ]
-
-    summary_total = len(date_filtered)
-    summary_recovered = sum(
-        1
-        for item in date_filtered
-        if item.get("status_key") == "success"
-    )
-    summary_failed = sum(
-        1
-        for item in date_filtered
-        if item.get("status_key") == "failed"
-    )
-    summary_pending = sum(
-        1
-        for item in date_filtered
-        if item.get("status_key") == "pending"
-    )
-
-    summary_recovery_rate = (
-        (summary_recovered / summary_total) * 100
-        if summary_total
-        else 0
-    )
-
+    total = len(filtered); recovered = sum(1 for x in filtered if x.get("status_key") == "success"); failed = sum(1 for x in filtered if x.get("status_key") == "failed"); pending = sum(1 for x in filtered if x.get("status_key") == "pending")
+    try: page = max(int(page), 1)
+    except (ValueError, TypeError): page = 1
+    try: page_size = min(max(int(page_size), 1), 100)
+    except (ValueError, TypeError): page_size = 25
+    total_pages = ((total + page_size - 1) // page_size) if total else 1; page = min(page, total_pages); start = (page - 1) * page_size
     return {
-        "payments": paginated,
-        "summary": {
-            "count": summary_total,
-            "failed": summary_failed,
-            "recovered": summary_recovered,
-            "pending": summary_pending,
-            "recovery_rate": round(
-                summary_recovery_rate,
-                1,
-            ),
-        },
-        "pagination": {
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-            "total_pages": total_pages,
-        },
-        "filters": {
-            "search": search,
-            "status": status,
-            "method": method,
-            "date_range": date_range,
-        },
+        "payments": filtered[start:start + page_size],
+        "pagination": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages},
+        "summary": {"total": total, "failed": failed, "recovered": recovered, "pending": pending, "recovery_rate": round((recovered / total) * 100, 1) if total else 0},
+        "filters": {"search": search, "status": status, "method": method, "date_range": date_range},
     }
 
-
-def build_payment_details(payment_id):
-    historical = load_payments()
-    live_state = load_live_state()
-
-    # -----------------------------------------------------
-    # LIVE PAYMENT
-    # -----------------------------------------------------
-
-    if payment_id in live_state:
-        attempts = live_state.get(payment_id, [])
-
-        if not attempts:
-            return None
-
-        first_attempt = attempts[0]
-        last_attempt = attempts[-1]
-
-        last_result = last_attempt.get(
-            "result",
-            "pending",
-        )
-
-        failure_reason = last_attempt.get(
-            "failure_reason",
-            "network_error",
-        )
-
-        probability = float(
-            last_attempt.get(
-                "probability",
-                59.0,
-            )
-            or 59.0
-        )
-
-        action = last_attempt.get(
-            "action",
-            "unknown",
-        )
-
-        amount = float(
-            last_attempt.get(
-                "recovered_amount",
-                0,
-            )
-            or 0
-        )
-
-        # Build actual recovery timeline from live attempts.
-        timeline = []
-
-        for index, attempt in enumerate(
-            attempts,
-            start=1,
-        ):
-            attempt_action = attempt.get(
-                "action",
-                "unknown",
-            )
-
-            result = attempt.get(
-                "result",
-                "pending",
-            )
-
-            timeline.append(
-                {
-                    "event": (
-                        f"Recovery attempt #{index}"
-                    ),
-                    "description": (
-                        f"{format_action(attempt_action)} "
-                        f"executed by recovery engine."
-                    ),
-                    "timestamp": attempt.get(
-                        "timestamp"
-                    ),
-                    "status": result,
-                    "status_label": format_status(
-                        result
-                    ),
-                    "action": format_action(
-                        attempt_action
-                    ),
-                    "attempt_number": attempt.get(
-                        "attempt_number",
-                        index,
-                    ),
-                }
-            )
-
-        # Add a final recovery event when payment succeeds.
-        if last_result == "success":
-            timeline.append(
-                {
-                    "event": "Payment recovered",
-                    "description": (
-                        "Payment was successfully recovered "
-                        "by the recovery engine."
-                    ),
-                    "timestamp": last_attempt.get(
-                        "timestamp"
-                    ),
-                    "status": "success",
-                    "status_label": "Recovered",
-                    "action": format_action(
-                        action
-                    ),
-                    "attempt_number": last_attempt.get(
-                        "attempt_number"
-                    ),
-                }
-            )
-
-        return {
-            "payment": {
-                "payment_id": payment_id,
-                "customer_id": None,
-                "amount": amount,
-                "payment_method": "Wallet",
-                "failure_reason": failure_reason,
-                "timestamp": first_attempt.get(
-                    "timestamp"
-                ),
-                "probability": probability,
-                "action": format_action(action),
-                "action_key": action,
-                "status": format_status(
-                    last_result
-                ),
-                "status_key": last_result,
-                "source": "live",
-            },
-            "timeline": timeline,
-        }
-
-    # -----------------------------------------------------
-    # HISTORICAL PAYMENT
-    # -----------------------------------------------------
-
-    for payment in historical:
-        if payment.get("payment_id") != payment_id:
-            continue
-
-        recovered = (
-            str(
-                payment.get(
-                    "recovered",
-                    "",
-                )
-            ).lower()
-            == "true"
-        )
-
-        action = payment.get(
-            "initial_action",
-            "unknown",
-        )
-
-        failure_reason = payment.get(
-            "failure_reason",
-            "unknown",
-        )
-
-        timestamp = payment.get(
-            "timestamp"
-        )
-
-        probability = calculate_probability(
-            failure_reason
-        )
-
-        record_status = (
-            "Recovered"
-            if recovered
-            else "Failed"
-        )
-
-        timeline = [
-            {
-                "event": "Payment failure detected",
-                "description": (
-                    f"Payment failed due to "
-                    f"{failure_reason}."
-                ),
-                "timestamp": timestamp,
-                "status": "failed",
-                "status_label": "Failed",
-                "action": None,
-                "attempt_number": None,
-            }
-        ]
-
-        if recovered:
-            timeline.append(
-                {
-                    "event": "Recovery completed",
-                    "description": (
-                        f"Payment recovered using "
-                        f"{format_action(action)}."
-                    ),
-                    "timestamp": timestamp,
-                    "status": "success",
-                    "status_label": "Recovered",
-                    "action": format_action(action),
-                    "attempt_number": None,
-                }
-            )
-
-        return {
-            "payment": {
-                "payment_id": payment_id,
-                "customer_id": payment.get(
-                    "customer_id"
-                ),
-                "amount": float(
-                    payment.get("amount") or 0
-                ),
-                "payment_method": payment.get(
-                    "payment_method",
-                    "Unknown",
-                ),
-                "failure_reason": failure_reason,
-                "timestamp": timestamp,
-                "probability": probability,
-                "action": format_action(action),
-                "action_key": action,
-                "status": record_status,
-                "status_key": (
-                    "success"
-                    if recovered
-                    else "failed"
-                ),
-                "source": "historical",
-            },
-            "timeline": timeline,
-        }
-
-    return None
-
-
-# ---------------------------------------------------------
-# RECOVERY PERFORMANCE
-# ---------------------------------------------------------
 
 def build_recovery_performance():
-    payments = load_payments()
+    """
+    Build recovery-rate performance data.
 
-    buckets = {}
+    Includes:
+    - Historical payment records
+    - Live recovery records
+
+    Groups records by month and calculates:
+
+        recovered payments / total payments * 100
+    """
+
+    payments = load_payments()
+    live_state = load_live_state()
+
+    monthly = {}
+
+    total = 0
+    recovered_total = 0
+
+    # -------------------------------------------------
+    # HISTORICAL PAYMENTS
+    # -------------------------------------------------
 
     for payment in payments:
+        timestamp = str(payment.get("timestamp") or "")
 
-        timestamp = payment.get(
-            "timestamp"
-        )
+        if not timestamp:
+            continue
 
-        parsed = parse_timestamp(
-            timestamp
-        )
+        month_key = timestamp[:7]
 
-        month = parsed.month
+        if len(month_key) != 7:
+            continue
 
-        if month not in buckets:
-            buckets[month] = {
+        if month_key not in monthly:
+            monthly[month_key] = {
                 "total": 0,
                 "recovered": 0,
             }
 
-        buckets[month]["total"] += 1
+        monthly[month_key]["total"] += 1
+        total += 1
 
-        if str(
-            payment.get(
-                "recovered",
-                "",
-            )
-        ).lower() == "true":
+        recovered = str(
+            payment.get("recovered", "")
+        ).lower()
 
-            buckets[month]["recovered"] += 1
+        if recovered in ("true", "1", "yes"):
+            monthly[month_key]["recovered"] += 1
+            recovered_total += 1
+
+    # -------------------------------------------------
+    # LIVE RECOVERY RECORDS
+    # -------------------------------------------------
+
+    for payment_id, attempts in live_state.items():
+
+        if not attempts:
+            continue
+
+        # One payment should count only once.
+        total += 1
+
+        latest_attempt = attempts[-1]
+
+        timestamp = str(
+            latest_attempt.get("timestamp")
+            or latest_attempt.get("created_at")
+            or ""
+        )
+
+        month_key = timestamp[:7]
+
+        if len(month_key) == 7:
+
+            if month_key not in monthly:
+                monthly[month_key] = {
+                    "total": 0,
+                    "recovered": 0,
+                }
+
+            monthly[month_key]["total"] += 1
+
+        result = str(
+            latest_attempt.get("result")
+            or latest_attempt.get("status")
+            or ""
+        ).lower()
+
+        is_recovered = result in (
+            "success",
+            "recovered",
+            "completed",
+        )
+
+        if is_recovered:
+            recovered_total += 1
+
+            if len(month_key) == 7:
+                monthly[month_key]["recovered"] += 1
+
+    # -------------------------------------------------
+    # SORT MONTHS
+    # -------------------------------------------------
+
+    sorted_months = sorted(monthly.items())
 
     labels = []
     values = []
-    bucket_data = []
+    buckets = []
 
-    for month in range(1, 13):
+    month_names = [
+        "Jan", "Feb", "Mar", "Apr",
+        "May", "Jun", "Jul", "Aug",
+        "Sep", "Oct", "Nov", "Dec",
+    ]
 
-        data = buckets.get(
-            month,
-            {
-                "total": 0,
-                "recovered": 0,
-            },
-        )
+    for month_key, data in sorted_months:
 
-        total = data["total"]
-        recovered = data["recovered"]
+        bucket_total = data["total"]
+        bucket_recovered = data["recovered"]
 
-        value = (
-            (recovered / total) * 100
-            if total
+        recovery_rate = (
+            (bucket_recovered / bucket_total) * 100
+            if bucket_total > 0
             else 0
         )
 
-        labels.append(
-            str(month)
-        )
+        try:
+            _, month = month_key.split("-")
+            label = month_names[int(month) - 1]
+        except Exception:
+            label = month_key
 
-        values.append(
-            round(value, 1)
-        )
+        value = round(recovery_rate, 1)
 
-        bucket_data.append(
-            {
-                "label": str(month),
-                "value": round(
-                    value,
-                    1,
-                ),
-                "recovered": recovered,
-                "total": total,
-            }
-        )
+        labels.append(label)
+        values.append(value)
 
-    total = len(payments)
+        buckets.append({
+            "label": label,
+            "total": bucket_total,
+            "recovered": bucket_recovered,
+            "value": value,
+        })
 
-    recovered = sum(
-        1
-        for payment in payments
-        if str(
-            payment.get(
-                "recovered",
-                "",
-            )
-        ).lower() == "true"
-    )
+    # -------------------------------------------------
+    # FINAL RESULT
+    # -------------------------------------------------
 
     return {
+        "total": total,
+        "recovered": recovered_total,
         "labels": labels,
         "values": values,
-        "buckets": bucket_data,
-        "recovered": recovered,
-        "total": total,
+        "buckets": buckets,
     }
-
-
-# ---------------------------------------------------------
-# AUDIT TRAIL
-# ---------------------------------------------------------
 
 def build_audit_trail(
     search="",
@@ -1196,6 +584,7 @@ def build_audit_trail(
     page=1,
     page_size=25,
 ):
+    date_range = normalize_date_range(date_range)
     historical = load_payments()
     recovery_attempts = load_recovery_attempts()
     live_state = load_live_state()
@@ -1534,12 +923,9 @@ def build_audit_trail(
     # -----------------------------------------------------
 
     date_range = normalize_date_range(date_range)
-    cutoff = range_cutoff(date_range)
-
     date_filtered = [
-        event
-        for event in events
-        if in_date_range(event.get("timestamp"), cutoff)
+        event for event in events
+        if in_date_range(event.get("timestamp"), date_range)
     ]
 
     # -----------------------------------------------------
@@ -1815,17 +1201,12 @@ class APIHandler(
         if path == "/api/dashboard":
 
             try:
-                date_range = query.get(
-                    "range",
-                    ["30d"],
-                )[0]
 
+                date_range = query.get("range", ["30d"])[0]
                 json_response(
                     self,
                     200,
-                    build_dashboard(
-                        date_range=date_range,
-                    ),
+                    build_dashboard(date_range=date_range),
                 )
 
             except Exception as exc:
@@ -1904,10 +1285,7 @@ class APIHandler(
                     ["all"],
                 )[0]
 
-                date_range = query.get(
-                    "range",
-                    ["30d"],
-                )[0]
+                date_range = query.get("range", ["30d"])[0]
 
                 page = query.get(
                     "page",
@@ -2052,6 +1430,80 @@ class APIHandler(
         if path.startswith("/api/failed-payments/"):
 
             payment_id = path.split(
+                "/api/failed-payments/",
+                1,
+            )[1]
+
+            if not payment_id:
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": "payment_id_required",
+                    },
+                )
+                return
+
+            try:
+                details = build_payment_details(
+                    payment_id
+                )
+
+                if details is None:
+                    json_response(
+                        self,
+                        404,
+                        {
+                            "error": "payment_not_found",
+                            "payment_id": payment_id,
+                        },
+                    )
+                    return
+
+                json_response(
+                    self,
+                    200,
+                    details,
+                )
+
+            except Exception as exc:
+                json_response(
+                    self,
+                    500,
+                    {
+                        "error": "payment_details_failed",
+                        "message": str(exc),
+                    },
+                )
+
+            return
+
+            try:
+
+                json_response(
+                    self,
+                    200,
+                    build_recovery_performance(),
+                )
+
+            except Exception as exc:
+
+                json_response(
+                    self,
+                    500,
+                    {
+                        "error":
+                            "recovery_performance_failed",
+
+                        "message":
+                            str(exc),
+                    },
+                )
+
+            return
+
+            if path.startswith("/api/failed-payments/"):
+                payment_id = path.split(
                 "/api/failed-payments/",
                 1,
             )[1]

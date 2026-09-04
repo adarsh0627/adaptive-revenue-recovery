@@ -26,7 +26,7 @@ const DATE_RANGES = [
 
 function Dashboard() {
   const [dashboardData, setDashboardData] = useState(null);
-  const [range, setRange] = useState("30d");
+  const [range, setRange] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -196,7 +196,7 @@ function Dashboard() {
           change={
             <>
               <ArrowUpRight size={14} />
-              <span>V3 engine prediction</span>
+              <span>Average across analyzed payments</span>
             </>
           }
           icon={Sparkles}
@@ -216,3 +216,4 @@ function Dashboard() {
 }
 
 export default Dashboard;
+

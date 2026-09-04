@@ -212,7 +212,7 @@ function Analytics() {
       {/* KPI cards */}
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          label="Total failed payments"
+          label="Total payments evaluated"
           value={
             loading
               ? "—"
@@ -345,19 +345,11 @@ function Analytics() {
                 </p>
               ) : (
                 <>
-                  <p className="text-[11px] text-[#6b6b75]">
+                  <p className="text-center text-[11px] text-[#666672]">
                     <span className="font-semibold text-[#45454f]">
-                      {formatNumber(
-                        totals.recovered
-                      )}
+                      {formatNumber(totals.recovered)}
                     </span>{" "}
-                    of{" "}
-                    <span className="font-semibold text-[#45454f]">
-                      {formatNumber(
-                        totals.total
-                      )}
-                    </span>{" "}
-                    failed payments recovered.
+                    failed payments successfully recovered.
                   </p>
 
                   <p className="mt-2 text-[10px] text-[#92909a]">
